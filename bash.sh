@@ -1,1 +1,1 @@
-echo "<h1> tes file $BUILD_NUMBER </h1>" > index.html
+echo "<h1> tes file  sinar mas $BUILD_NUMBER </h1>" > index.html
