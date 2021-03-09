@@ -1,1 +1,1 @@
-echo "<h1> Hari ini Rakha Dian Nataprawira Sinar mas $BUILD_NUMBER </h1>" > index.html
+echo "<h1> Hari ini adalah Rakha Dian Nataprawira Sinar mas $BUILD_NUMBER </h1>" > index.html
