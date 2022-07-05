@@ -1,0 +1,252 @@
+pipeline {
+     agent { label 'sunlinecompiler' }
+     tools { 
+         maven 'mvn_3_8_1' 
+     }
+	options {
+	    gitLabConnection('bank_gitlabcentral_connection')
+//		gitlabBuilds(builds: ["clone code","clone tags code","clone merge code",'build', "deploy","deploy for alpha/beta tags","deploy for release tags"])
+		
+    }
+    environment {
+        branch = sh (returnStdout: true ,script: 'echo "$branch_name"|awk -F \'/\' \'{print \$NF}\'').trim()
+		REGISTRY_URL = "http://10.21.12.85:8081/repository/npm-public/"
+		release_url = "http://10.21.12.85:8081/repository/maven-releases/"
+		release_id = "releases"
+		snapshot_url = "http://10.21.12.85:8081/repository/maven-snapshots/"
+		snapshot_id = "sinarmas-nexus-snapshot"
+		nodejs_path="/opt/node/bin"
+		PATH="/usr/bin:$nodejs_path:$PATH"
+		notification_url = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=c0ce7fbb-5b52-4547-8018-6a616fd3c39c"
+   }
+   stages {
+       stage('Pre-Checkout') {
+            steps {
+                sh "git config http.sslVerify false"
+            }
+       }
+       stage('clone code') { 
+		when {
+			anyOf {
+			equals expected: "push", actual: env.event_name
+			}
+		}
+	   steps{
+	       gitlabCommitStatus("clone code"){
+				script {
+					try {
+						git branch: "$branch", credentialsId: 'bank_gitlabcentral', url: '$git_http_url'
+						} catch(exec) {
+							sh "echo stage run failed, cause: $exec"
+							sh "exit 1"
+					}
+				}
+			}
+			
+        }
+	
+       } 
+		stage('clone tag code') { 
+				when {
+				  allOf {
+					equals expected: "tag_push", actual: env.event_name
+					equals expected: "0000000000000000000000000000000000000000", actual: env.before
+					expression { return env.branch ==~ /.*(-ALPHA|-BETA|-RELEASE).*/ }
+				  }
+				}
+		steps{
+			   gitlabCommitStatus("clone tags code"){
+					script {
+						try {
+							git branch: "master", credentialsId: 'bank_gitlabcentral', url: '$git_http_url'
+							sh "git checkout $branch"
+						} catch(exec) {
+							sh "echo stage run failed, cause: $exec"
+							sh "exit 1"
+						}
+					}
+				}
+			}
+		
+		}
+		stage('clone merge code') { 
+				when {
+				  anyOf {
+					equals expected: "merge_request", actual: env.object_kind
+				  }
+				}
+			steps {
+			   gitlabCommitStatus("clone merge code"){
+					script {
+						try {
+							git branch: '$source_branch', credentialsId: 'bank_gitlabcentral', url: '$git_http_url'
+						} catch(exec) {
+							sh "echo stage run failed, cause: $exec"
+							sh "exit 1"
+						}
+					}
+				}
+			}
+		
+		}
+	
+		stage("build") {
+			when {
+				not {
+					allOf {
+						equals expected: "tag_push", actual: env.event_name
+						equals expected: "0000000000000000000000000000000000000000", actual: env.after
+					}
+				}
+			}
+			 steps {
+			  gitlabCommitStatus("build") {
+					script {
+						try {
+							currentBuild.displayName = "${BUILD_TAG}-${event_name} trigger by ${user_name} on ${project_name} ${branch}"
+							sh 'pwd'
+							sh 'yarn config set registry $REGISTRY_URL'
+							sh 'yarn config get registry'							
+							sh 'yarn --verbose'
+							sh 'env'
+							sh 'yarn lint check'
+						} catch(exec) {
+							sh "echo stage run failed, cause: $exec"
+							sh "exit 1"
+						}
+					}
+				}
+			  }
+			}
+		
+		stage("deploy") {
+			when {
+				  allOf {
+					equals expected: "push", actual: env.event_name
+					expression { return env.branch ==~ /.*(master|-stable)/ }
+				  }
+				}
+			 steps {
+			  gitlabCommitStatus("deploy") {
+					script {
+						try {
+							sh 'echo "start to deploy snapshot"'
+							sh 'pwd'
+							sh 'yarn config set registry $REGISTRY_URL'
+							sh 'yarn config get registry'							
+							sh 'yarn --verbose'
+							sh 'env'
+							sh 'yarn lint check'
+							sh 'yarn deploy'
+							//sh 'mvn -U clean deploy -f package.pom.xml -Pmaven-public,custom-prof -Dcustom_releases_id=${release_id} -Dcustom_releases_url=${release_url} -Dcustom_snapshots_id=${snapshot_id} -Dcustom_snapshots_url=${snapshot_url}'
+                            sh 'mvn --version'
+                            sh 'mvn -U clean deploy -e -f package.pom.xml -Pcustom-prof -Dcustom_central_id=maven-releases -Dcustom_central_url=http://10.21.12.85:8081/repository/maven-public/ -Dcustom_release_id=odc-releases -Dcustom_releases_url=http://10.21.12.85:8081/repository/maven-releases/ -Dcustom_snapshots_id=odc-releases -Dcustom_snapshots_url=http://10.21.12.85:8081/repository/maven-snapshots/ -s /opt/maven/conf/settings.xml'
+//						sh label: 'notification', script: '''curl "$notification_url" \\
+ //  -H \'Content-Type: application/json\' \\
+ //  -d "{\\"msgtype\\": \\"markdown\\",
+//\\"markdown\\": {
+//\\"content\\": \\"# <font color=\\\\\\"info\\\\\\">$project_name 发布新版本啦！</font>请相关同事注意。
+//> 发布人:<font color=\\\\\\"comment\\\\\\">${user_name}</font>
+//> 发布分支:<font color=\\\\\\"comment\\\\\\">${branch}</font>
+//> 版本类型: <font color=\\\\\\"comment\\\\\\">SNAPSHOT</font>
+//> 任务地址: [$BUILD_URL]($BUILD_URL)\\"
+//}
+//}"'''
+						} catch(exec) {
+							sh "echo stage run failed, cause: $exec"
+							sh "exit 1"
+						}
+					}
+			   }
+			 }
+		 }
+		stage("deploy for alpha/beta tags") {
+			when {
+				  allOf {
+					equals expected: "tag_push", actual: env.event_name
+					equals expected: "0000000000000000000000000000000000000000", actual: env.before
+					expression { return env.branch ==~ /.*(-ALPHA|-BETA).*/ }
+				  }
+				}
+			 steps {
+			  gitlabCommitStatus("deploy for ALPHA/BETA") {
+				script {
+					try {
+                        sh 'echo "start to deploy tags"'
+						sh 'pwd'
+						sh 'yarn config set registry $REGISTRY_URL'
+						sh 'yarn config get registry'
+						sh 'yarn --verbose'
+						sh 'env'
+						sh 'yarn lint check'
+						sh 'yarn deploy'
+						sh 'mvn versions:set -Pmaven-public -DnewVersion=$branch -f package.pom.xml'
+						//sh 'mvn -U clean deploy -f package.pom.xml -Pmaven-public,custom-prof -Dcustom_releases_id=${release_id} -Dcustom_releases_url=${release_url} -Dcustom_snapshots_id=${snapshot_id} -Dcustom_snapshots_url=${snapshot_url}'
+                        sh 'mvn --version'
+                        sh 'mvn -U clean deploy -e -f package.pom.xml -Pcustom-prof -Dcustom_central_id=maven-releases -Dcustom_central_url=http://10.21.12.85:8081/repository/maven-public/ -Dcustom_release_id=odc-releases -Dcustom_releases_url=http://10.21.12.85:8081/repository/maven-releases/ -Dcustom_snapshots_id=odc-releases -Dcustom_snapshots_url=http://10.21.12.85:8081/repository/maven-snapshots/  -s /opt/maven/conf/settings.xml'
+						sh 'mvn versions:revert -Pmaven-public -f package.pom.xml'
+//						sh label: 'notification', script: '''curl "$notification_url" \\
+//   -H \'Content-Type: application/json\' \\
+//   -d "{\\"msgtype\\": \\"markdown\\",
+//\\"markdown\\": {
+//\\"content\\": \\"# <font color=\\\\\\"info\\\\\\">$project_name 发布新版本啦！</font>请相关同事注意。
+//> 发布人:<font color=\\\\\\"comment\\\\\\">${user_name}</font>
+//> 发布版本:<font color=\\\\\\"comment\\\\\\">${branch}</font>
+//> 任务地址: [$BUILD_URL]($BUILD_URL)\\"
+//}
+//}"'''
+					} catch(exec) {
+						sh "echo stage run failed, cause: $exec"
+						sh "exit 1"
+					}
+				}
+				
+			   }
+			 }
+		 }
+		stage("deploy for release tags") {
+			when {
+				  allOf {
+					equals expected: "tag_push", actual: env.event_name
+					equals expected: "0000000000000000000000000000000000000000", actual: env.before
+					expression { return env.branch ==~ /.*(-RELEASE).*/ }
+				  }
+				}
+			 steps {
+			  gitlabCommitStatus("deploy for RELEASE") {
+				script {
+					try {
+                        sh 'echo "start to deploy tags"'
+							sh 'yarn config set registry $REGISTRY_URL'
+							sh 'pwd'
+							sh 'yarn config set registry $REGISTRY_URL'
+							sh 'yarn config get registry'							
+							sh 'yarn --verbose'
+							sh 'env'
+							sh 'yarn lint check'
+							sh 'yarn deploy'
+							sh 'mvn versions:set -Pmaven-public -DnewVersion=$branch -f package.pom.xml'
+							//sh 'mvn -U clean deploy -f package.pom.xml -Pmaven-public,custom-prof -Dcustom_releases_id=${release_id} -Dcustom_releases_url=${release_url} -Dcustom_snapshots_id=${snapshot_id} -Dcustom_snapshots_url=${snapshot_url}'
+                            sh 'mvn --version'
+                            sh 'mvn -U clean deploy -e -f package.pom.xml -Pcustom-prof -Dcustom_central_id=maven-releases -Dcustom_central_url=http://10.21.12.85:8081/repository/maven-public/ -Dcustom_release_id=odc-releases -Dcustom_releases_url=http://10.21.12.85:8081/repository/maven-releases/ -Dcustom_snapshots_id=odc-releases -Dcustom_snapshots_url=http://10.21.12.85:8081/repository/maven-snapshots/ -s /opt/maven/conf/settings.xml'
+							sh 'mvn versions:revert -Pmaven-public -f package.pom.xml'
+//						sh label: 'notification', script: '''curl "$notification_url" \\
+//   -H \'Content-Type: application/json\' \\
+//   -d "{\\"msgtype\\": \\"markdown\\",
+//\\"markdown\\": {
+//\\"content\\": \\"# <font color=\\\\\\"info\\\\\\">$project_name 发布新版本啦！</font>请相关同事注意。
+//> 发布人:<font color=\\\\\\"comment\\\\\\">${user_name}</font>
+//> 发布版本:<font color=\\\\\\"comment\\\\\\">${branch}</font>
+//> 任务地址: [$BUILD_URL]($BUILD_URL)\\"
+//}
+//}"'''
+					} catch(exec) {
+						sh "echo stage run failed, cause: $exec"
+						sh "exit 1"
+					}
+				}
+			   }
+			 }
+		 }
+    }
+}
